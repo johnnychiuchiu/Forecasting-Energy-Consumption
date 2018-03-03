@@ -107,8 +107,25 @@ weather_new_filtered_2 <- weather_new_filtered %>%
   filter(!is.na(smaller_than_max)) %>%
   filter(smaller_than_max == 1,bigger_than_min==1)
 
-nrow(weather_new_filtered_2)/nrow(weather_new) # 63% of weather data remaining
+summary(weather_new_filtered_2)
+```
 
+# for each site and each timestamp only use the one with closest distance 
+# if same distance and same timestamp for the site, use average temperature
+```{r}
+weather_new_filtered_3 <- weather_new_filtered_2 %>%
+  group_by(SiteId,Timestamp) %>% 
+  filter(Distance == min(Distance)) %>%
+  ungroup() %>%
+  group_by(SiteId,Timestamp,Distance) %>%
+  summarise(Weather=mean(Temperature))
+  
+nrow(weather_new_filtered_3)/nrow(weather_new) # 42% of weather data remaining
+```
+
+# output
+```{r}
+write_csv(weather_new_filtered_3,"weather_cleaned.csv")
 ```
 
 
