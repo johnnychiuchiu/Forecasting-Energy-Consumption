@@ -2,7 +2,7 @@
 *.Rproj
 submission/
 .DS_store
-/data/*
+data/*.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
