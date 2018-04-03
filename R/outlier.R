@@ -1,6 +1,7 @@
 library(dplyr)
 library(readr)
 library(forecast)
+source('ts_function.R')
 
 ##### Read Data
 train_15min = read.csv('data/train_15min.csv')
