@@ -1,0 +1,248 @@
+---
+title: "Weather 1 day"
+author: "Junxiong Liu"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse=TRUE, prompt=TRUE, eval=TRUE, message=F, include=T,comment=NULL,fig.width = 8, warning = FALSE, fig.height = 8,tidy.opts=list(width.cutoff=50),tidy=TRUE,cache = TRUE)
+```
+
+```{r packageCheck, include=FALSE}
+mypacks <- c("ggplot2","stringr","dplyr","knitr","formattable","xlsx","boot","readr","lubridate")  # what packages are needed?
+packs <- installed.packages()   # find installed package list
+install.me <- mypacks[!(mypacks %in% packs[,"Package"])]  #what needs to be installed?
+if (length(install.me) >= 1) install.packages(install.me, repos = "http://cran.us.r-project.org")   # install (if needed)
+lapply(mypacks, library, character.only=TRUE)  # load all packages
+```
+
+- trying some holt winters model
+
+# read in
+```{r}
+train_1day <- read.csv("../data/train_1day_cleaned.csv")
+test <- read_csv("../data/submission_format.csv")
+```
+
+# data wrangling
+```{r}
+# change the date stuff in train_1day
+train_1day <- train_1day %>%
+  mutate(Timestamp = as.character(Timestamp),
+         Timestamp = ymd(word(Timestamp)))
+
+# 89 sites 
+length(unique(train_1day$SiteId))
+
+# select the sites in train
+test_use <- test %>% filter(SiteId %in% train_1day$SiteId)
+
+# bind train with test
+temp <- train_1day %>% 
+  select(obs_id, ForecastId, SiteId, Timestamp, Value)
+temp2 <- test_use %>% 
+  mutate(Value = NA) %>%
+  select(obs_id, ForecastId, SiteId, Timestamp, Value)
+
+combined_1d <- rbind(temp,temp2)
+
+# sort
+combined_1d <- combined_1d %>% arrange(SiteId,Timestamp)
+```
+
+# try out a Holt Winters model
+
+# generate predictions
+```{r}
+slice_data <- function(data){
+  for (index in c(2:nrow(data))){
+    if (!is.na(data$Value[index]) & is.na(data$Value[index-1]) & 
+               index !=1){
+      return (index - 1)
+      # case where NA is at end
+    }else if (is.na(data$Value[index]) & index == nrow(data)){
+      return (index)
+    }
+  }
+  return (-1) # cannot slice
+}
+
+get_last_train <- function(data){
+  # Get the index for the last train in each chunk
+  my_ind <- -1
+  
+  for (index in c(2:nrow(data))){
+    if (!is.na(data$Value[index]) & is.na(data$Value[index+1]) & index !=1){
+      my_ind <- index
+      break
+    }
+  }
+  my_ind
+}
+```
+
+```{r}
+predict_ts <- function(train, n_pred, seasonal, frequency){
+  # make time series prediction for each of the NA chunk the input data
+  if (frequency != -1){
+    freq <- frequency # user_specified
+  }else{
+    freq <- floor(nrow(train)/5)
+  }
+  
+  # to fight optimization error in HoltWinters
+  try_fit <- tryCatch(
+    {
+      y <- ts(train %>% select(Value), frequency=freq)
+      EWMA <- HoltWinters(y, seasonal = seasonal) 
+      EWMApred <- predict(EWMA, n.ahead=n_pred, 
+                        prediction.interval = T, level = 0.95)
+      return(EWMApred)
+    },
+    error = function(e){
+        predict_ts(train, n_pred, seasonal, freq-1)
+    }
+  )
+
+  try_fit
+}
+```
+
+```{r}
+predict_for_site <- function(data){
+  # fill all the NA value for each site
+  i=1
+  train_first=1
+  while (slice_data(data)!=-1){
+    print(paste("NA chunk No.",i))
+    if(i!=1){
+      train_first = na_last+1
+    }
+    na_last = slice_data(data)
+    train_last = get_last_train(data)
+    n_pred = na_last-train_last
+    
+    # print(paste("train_first:",train_first))
+    # print(paste("train_last:",train_last))
+    # print(paste("na_last:",na_last))
+
+    EWMApred = as.numeric(predict_ts(data[train_first:train_last,], 
+                                     n_pred, seasonal='additive',7)[,1])
+    # if smaller than 0, change to 0 directly
+    # EWMApred[EWMApred < 0] <- 0
+    
+    # if smaller than 0, change to half of previous
+    # if too big prediction outlier, change to 
+    # the average between prev and after
+    for (index in 1:length(EWMApred)){
+      # check smaller than 0 case
+      if (EWMApred[index] < 0){
+        if (index == 1){
+          EWMApred[index] <- 0
+        }else{
+          EWMApred[index] <- EWMApred[index-1]/2 # half of previous
+        }
+      }else if (EWMApred[index] >= 0){
+        # check upper boundoutlier prediction case 
+        # (define it as > 3* prev and 3*after)
+        if (index > 1 & index != length(EWMApred)){
+          if(EWMApred[index] > 3*EWMApred[index-1] &
+             EWMApred[index] > 3*EWMApred[index+1] &
+             EWMApred[index+1] > 0){
+              EWMApred[index] <- (EWMApred[index-1]+EWMApred[index+1])/2
+          } 
+        }        
+      }
+    }
+    
+    # 7 observations grouped together as trend
+    data[(train_last+1):na_last,]$Value = EWMApred
+    i= i+1
+  }
+  return(data)
+}
+```
+
+```{r}
+final <- data.frame()
+
+# combined_1d_1 <- combined_1d %>% filter(SiteId == 1) %>% slice(1:990)
+
+for (site in unique(combined_1d$SiteId)){
+  print(paste("SiteId:",site))
+  site_result = predict_for_site(combined_1d %>% filter(SiteId==site))
+  final = rbind(final, site_result)
+}
+
+# now find which ones are test
+test_return <- final %>% filter(obs_id %in% test_use$obs_id)
+
+# prop
+sum(test_return$Value<0)/nrow(test_return)
+
+# unique sites w/ this problem
+length(unique(test_return[test_return$Value<0,]$SiteId))
+
+# over 2: 0.04116095, 21
+# over 5: 0.016666, 8
+# over 20: 0.01779118, 12
+
+# Now: freq = 7 for this
+```
+
+# mutate (if smaller than 0, use 0)
+```{r}
+test_return <- test_return %>%
+  arrange(SiteId,Timestamp) %>%
+  mutate(Value = ifelse(Value < 0, 0, Value)) %>%
+  select(obs_id, SiteId, Timestamp, ForecastId, Value)
+```
+
+# output
+```{r}
+write.csv(test_return,"../data/pred_1d_using_current.csv",row.names = FALSE)
+```
+
+
+
+
+
+
+
+# archived code
+```{r}
+# plug into the data, siteid, and frequency
+# parameters
+## data for 1 site
+## choose frequency(-1) means auto
+## method:additive or multiplicative
+# return the test set obs_id and predictions
+fit_data <- function(data_1site,frequency,method){
+  train <- data_1site %>% na.omit()
+  
+  if (frequency != -1){
+    freq <- frequency # user_specified
+  }else{
+    freq <- nrow(train)/2
+  }
+  
+  y <- ts(train[["Value"]], frequency = freq) 
+  k <- sum(is.na(data_1site)) # k = prediction horizon
+  n <- nrow(train)
+  Holtpsg_s_a <- HoltWinters(y, seasonal = method) 
+  HoltpsgPred_s_a <- predict(Holtpsg_s_a, n.ahead=k,
+                         prediction.interval = T, level = 0.95)
+  
+}
+
+
+
+pred <- as.numeric(HoltpsgPred_s_a[,1])
+
+temp_try2[c((n+1):(n+k)),]$Value <- pred
+
+```
+

@@ -1,0 +1,108 @@
+---
+title: "combine csv"
+author: "Junxiong Liu"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse=TRUE, prompt=TRUE, eval=TRUE, message=F, include=T,comment=NULL,fig.width = 5, warnings = FALSE, fig.height = 3,tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+```{r packageCheck, include=FALSE}
+mypacks <- c("ggplot2","stringr","dplyr","knitr","formattable","boot","readr","lubridate")  # what packages are needed?
+packs <- installed.packages()   # find installed package list
+install.me <- mypacks[!(mypacks %in% packs[,"Package"])]  #what needs to be installed?
+if (length(install.me) >= 1) install.packages(install.me, repos = "http://cran.us.r-project.org")   # install (if needed)
+lapply(mypacks, library, character.only=TRUE)  # load all packages
+```
+
+# Read Data
+```{r}
+csv_15min <- read.csv("all holtwinters (outlier updated)/pred_15min.csv")
+csv_1h <- read.csv("all holtwinters (outlier updated)/pred_1h.csv")
+csv_1d <- read.csv("all holtwinters (outlier updated)/pred_1d.csv")
+
+good_submission_csv <- read.csv("ma(15min)+holtwinters(other)/ma.csv")
+```
+
+# Combine data
+```{r}
+# disable scientific notation
+options(scipen=999)
+
+combined <- rbind(csv_1d,csv_1h)
+combined <- rbind(combined,csv_15min)
+
+# change the Timestamp to good submission
+combined_join <- combined %>% select(-Timestamp)
+good_submission_csv_join <- good_submission_csv %>% 
+  select(-c(Value,ForecastId,SiteId))
+combined <- left_join(combined_join,good_submission_csv_join,
+                          by = "obs_id")
+
+
+combined <- combined %>% 
+  arrange(SiteId,Timestamp,ForecastId) %>%
+  mutate(Value = as.numeric(Value)) %>%
+  select(obs_id,SiteId,Timestamp,ForecastId,Value) # change header order
+
+# check several sites
+temp <- combined %>% filter(SiteId == 192)
+
+```
+
+# quality check
+```{r}
+# quality check
+summary(combined)
+summary(good_submission_csv)
+
+# ----------------------------
+combined_qual <- combined %>% 
+  group_by(SiteId,ForecastId) %>%
+  summarise(n=n())
+
+good_qual <- good_submission_csv %>% 
+  group_by(SiteId,ForecastId) %>%
+  summarise(n=n())
+
+# good
+anti_join(combined_qual,good_qual)
+
+# ----------------------------
+# more check
+combined_qual <- combined %>% 
+  group_by(SiteId,ForecastId,obs_id) %>%
+  summarise(n=n())
+
+good_qual <- good_submission_csv %>% 
+  group_by(SiteId,ForecastId,obs_id) %>%
+  summarise(n=n())
+
+# good
+anti_join(combined_qual,good_qual)
+
+# number of predictions bigger than biggest
+temp <- combined %>% filter(Value > 8749496)
+
+# experiment (is number too big?)
+#combined <- combined %>%
+#  mutate(Value = ifelse(Value>8749496,8749496,Value))
+```
+
+# output
+```{r}
+#write.csv(format(combined, scientific = FALSE),"combined.csv",
+#          row.names = FALSE)
+
+write.csv(combined,"combined.csv",
+          row.names = FALSE)
+
+temp <- read.csv("combined.csv")
+summary(temp)
+str(temp)
+```
+
