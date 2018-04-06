@@ -8,7 +8,7 @@ The objective is to forecast energy consumption from the following data:
 * Calendar information, identifying working and off days
 * Meta-data about the building, e.g., whether it is an office space, a restaurant, etc.
 
-Our team result in 71th place in the competition
+Our team resulted in **71th place** in the competition.
 
 
 ## Documentation
